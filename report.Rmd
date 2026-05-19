@@ -1,0 +1,44 @@
+---
+title: "ami_data_analysis"
+author: "Epidemiology group"
+date: "2026-05-19"
+output: html_document
+---
+
+## Installing the libraries
+
+```{r setup, echo=FALSE}
+.libPaths("library")
+library(readxl)
+library(epiR)
+library(Epi)
+library(popEpi)
+library(ggplot2)
+library(scales)
+library(lubridate)
+library(AER)
+library(MASS)
+library(survival)
+library(tidyverse)
+library(pmsampsize)
+library(psych)
+library(corrplot)
+```
+
+## Accessing the dataset
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+ami_data <- read_excel('./AMI_data.xlsx')
+head(ami_data)
+```
+## Question 1
+
+Start with an initial data analysis, comparing patients dead versus patients alive at 30 days. Insert also a column with the total population descriptive statistics. Include also a new variable, the Body Mass Index.
+
+### BMI
+
+```{r bmi}
+ami_data$BMI <- ami_data$wei/ami_data$hei
+```
