@@ -1,16 +1,22 @@
 ---
-title: "ami_data_analysis"
-author: "Epidemiology group"
-date: "2026-05-19"
-output: html_document
+title: "Acute Myocardial Infarction - 30-day mortality"
+subtitle: "Data analysis and prognostic model building."
+author: "Arhin Claribel Ajua Tawiah, Bragagnolo Sofia, Guccione Anna, Maia Tavora Leticia"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    theme: flatly
+    highlight: tango
+    number_sections: true
+  pdf_document:
+    toc: true
 ---
 
-## Installing the libraries
-
-```{r setup, echo=FALSE}
-.libPaths("library")
+```{r setup, include=FALSE}
 library(readxl)
 library(epiR)
+library(epitools)
 library(Epi)
 library(popEpi)
 library(ggplot2)
@@ -23,22 +29,349 @@ library(tidyverse)
 library(pmsampsize)
 library(psych)
 library(corrplot)
+library(gtsummary)
+library(broom.helpers)
+library(smd)
+library(knitr)
+library(kableExtra)
+library(corrplot)
+library(rms)
 ```
 
-## Accessing the dataset
 
-You can also embed plots, for example:
+**Acute Myocardial Infarction (MI)** (“heart attack”) is caused by the formation of a clot in one of the coronary arteries that supply blood to the heart muscle.
+Mortality is substantial in the period immediately after the event (and during the years after surviving the initial infarction). The risk of **30-day mortality** strongly depends on various prognostic factors.
 
-```{r pressure, echo=FALSE}
+The data we use here are a sub-sample coming from a trial, a four-arm randomized study that
+compared the efficacy of different intravenous thrombolytic regimens for acute myocardial infarction.
+
+Aim of this project is to predict the probability of 30-days mortality.
+
+# Question 1: Initial Data Analysis
+
+> Start with an initial data analysis, comparing patients dead versus patients alive at 30 days. 
+> Insert also a column with the total population descriptive statistics. 
+> Include also a new variable, the Body Mass Index.
+
+## Data loading
+
+```{r load}
 ami_data <- read_excel('./AMI_data.xlsx')
+```
+
+### Dimensions
+```{r rows}
+data.frame(
+  'patients'  = nrow(ami_data),
+  'factors'   = ncol(ami_data)) %>% kable(col.names = c("Num of patients", "Num of prognostic factors"), caption = "Dataset dimensions") %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("bordered"))
+```
+
+All variables are numerical
+
+```{r description}
 head(ami_data)
 ```
-## Question 1
 
-Start with an initial data analysis, comparing patients dead versus patients alive at 30 days. Insert also a column with the total population descriptive statistics. Include also a new variable, the Body Mass Index.
+### Factors labels
+The factors in the observation include:
+  
+  * personal factors such as age, gender, height and weight
+  * conditions like hypertension, diabetes, smoking
+  * family history and the history of previous cardiovascular events (previous MI, angina, stroke, bypass surgery)
+  * relevant characteristics such as the location of the infarction and the extent of ECG abnormalities 
+  
+  * the acute state of the patient as reflected by the Killip score
+
+```{r labels}
+pretty_labels <- list(
+    sex    ~ "Sex",
+    age    ~ "Age (years)",
+    bmi    ~ "Body Mass Index (kg/m²)",
+    killip ~ "Killip class",
+    sho    ~ "Shock (Killip 3/4)",
+    dia    ~ "Diabetes",
+    hyp    ~ "Hypotension (SBP < 100)",
+    hrt    ~ "Tachycardia (pulse > 80)",
+    ant    ~ "Anterior infarct location",
+    pmi    ~ "Previous MI",
+    htn    ~ "Hypertension history",
+    smk    ~ "Smoking status",
+    lip    ~ "Hypercholesterolaemia",
+    pan    ~ "Previous angina",
+    fam    ~ "Family history of MI",
+    ste    ~ "ST elevation (n leads)",
+    st4    ~ "ST elevation > 4 leads",
+    ttr    ~ "Time to pain relief > 1h"
+  )
+status_colors <- c("Alive" = "#519e8a", "Dead" = "#E5625E")
+```
+
+### Missing values
+Checking for missing values:
+```{r missing}
+colSums(is.na(ami_data))
+```
+There is no missing values in the data.
+
+## Data preparation
+
+### BMI factor
+
+We create the BMI column following the formula.
+
+```{r add-bmi}
+ami_data$bmi <- ami_data$wei/(ami_data$hei/100)^2
+```
+
+### Converting to factors
+
+We convert the `day30` column into a factor for easier interpretation. We do the same with all the other binary variables. And for ordinal variables too.
+
+```{r day30}
+
+ami_data <- ami_data %>%
+  mutate(
+    day30 = factor(day30, levels=c(0,1), labels=c("Alive","Dead")),
+    sex = factor(sex, levels=c(0, 1), labels=c("Male", "Female")),
+    a65 = factor(a65, levels=c(0, 1), labels=c("No", "Yes")),
+    sho = factor(sho, levels=c(0, 1), labels=c("No","Yes")),
+    dia = factor(dia,   levels=c(0,1), labels=c("No","Yes")),
+    hyp = factor(hyp,   levels=c(0,1), labels=c("No","Yes")),
+    hrt = factor(hrt,   levels=c(0,1), labels=c("No","Yes")),
+    ant = factor(ant,   levels=c(0,1), labels=c("No","Yes")),
+    pmi = factor(pmi,   levels=c(0,1), labels=c("No","Yes")),
+    htn = factor(htn,   levels=c(0,1), labels=c("No","Yes")),
+    lip = factor(lip,   levels=c(0,1), labels=c("No","Yes")),
+    pan = factor(pan,   levels=c(0,1), labels=c("No","Yes")),
+    fam = factor(fam,   levels=c(0,1), labels=c("No","Yes")),
+    st4 = factor(st4,   levels=c(0,1), labels=c("No","Yes")),
+    ttr = factor(ttr,   levels=c(0,1), labels=c("No","Yes")),
+    killip = factor(killip, levels=c(1,2,3,4)),
+    smk = factor(ami_data$smk, levels=c(1,2,3), labels=c("Never","Ex","Current"), ordered=TRUE))
+
+head(ami_data)
+```
+
+## Exploring the data
+```{r death}
+ggplot(ami_data) +
+  geom_bar(aes(x = day30, fill = day30), stat = "count") +
+  scale_fill_manual(name = "Status", values = status_colors) +
+  theme_minimal()
+```
+
+
+### Cumulative incidence
+```{r ci}
+n_dead  <- sum(ami_data$day30 == "Dead")
+n_total <- nrow(ami_data)
+inc <- binom.exact(n_dead, n_total)
+data.frame(
+  'Deaths'  = n_dead,
+  'Total'   = n_total,
+  'Perc' = round(inc$proportion * 100, 2),
+  'CI lower' = round(inc$lower * 100, 2),
+  'CI upper' = round(inc$upper * 100, 2)
+) %>% kable(col.names = c("30-day status", "N", "%", "95% CI lower", "95% CI upper"), caption = "Cumulative incidence at 30 days") %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("bordered"))
+```
+
+### Descriptive statistics
+
+We add the SMD to confront the variables.
+* SMD positive: the dead group has higher values
+* SMD negative: the alive group has higher values
+* SMD = 0: the 2 groups are identical for that variable
+Values:
+* < 0.1: negligible
+* 0.1 - 0-3: small difference
+* 0.3 - 0.5: moderate difference
+* > 0.5: large difference
+
+Here we present the table with the characteristics ordered by the absolute value of the SMD.
+```{r summary}
+tbl_summary(ami_data, by=day30, 
+            include = c(age, killip, sho, ant, hrt, ste, st4, smk, hyp, pmi, sex, bmi, pan, ttr, dia, fam, htn, lip),
+            label = pretty_labels) %>% add_overall() %>% add_stat_label() %>% bold_labels() %>% add_difference(everything() ~ "smd") %>% modify_spanning_header(all_stat_cols() ~ "**After 30 days**") %>% modify_caption(
+    "**Table 1. Baseline characteristics by 30-day vital status**"
+  )
+```
+
+### Correlation matrix
+
+```{r corr}
+small_ami_data <- ami_data %>%
+  select(day30, age, killip, sho, ant, hrt, ste, st4, smk, sex, bmi) %>% mutate(across(everything(), ~ as.numeric(.x) - 1))
+corr <- cor(small_ami_data, use = "complete.obs")
+corrplot(corr, method = "color", type = "upper")
+```
+## Visual summary
+Now we present some visualization for key predictors.
+
+
+
+### Age
+
+```{r age}
+# Histogram for age
+ggplot(ami_data, aes(x = age)) +
+  geom_histogram(binwidth = 1, fill = "steelblue", color = "white") +
+  labs(title = "Age distribution") + theme_minimal()
+
+ggplot(ami_data, aes(x = age, fill = day30, colour = day30)) +
+  geom_density(alpha = 0.4, linewidth = 0.8) +
+  scale_fill_manual(values  = status_colors) +
+  scale_colour_manual(values = status_colors) +
+  labs(title = "Age distribution by 30-day status", x = "Age (years)", y = "Density",
+       fill = "30-day status", colour = "30-day status") +
+  theme_bw(base_size = 12) +
+  theme(legend.position = "bottom", plot.title = element_text(face = "bold")) + theme_minimal()
+
+ggplot(ami_data, aes(x = day30, y = age, fill = day30)) +
+  geom_violin(alpha = 0.5, trim = TRUE) +
+  geom_boxplot(width = 0.15, outlier.size = 0.5, alpha = 0.7) +
+  scale_fill_manual(values = status_colors) +
+  labs(title = "Age by 30-day status", x = NULL, y = "Age") +
+  theme_bw(base_size = 11) +
+  theme(legend.position = "none") + theme_minimal()
+```
+
+### Killip
+
+```{r killip}
+ami_data %>%
+  count(killip, day30) %>%
+  group_by(killip) %>%
+  mutate(pct = n / sum(n)) %>%
+  filter(day30 == "Dead") %>%
+  ggplot(aes(x = killip, y = pct, fill = killip)) +
+  geom_col(colour = "white", width = 0.7) +
+  geom_text(aes(label = scales::percent(pct, accuracy = 0.1)),
+            vjust = -0.4, size = 3.8, fontface = "bold") +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 0.65)) +
+  scale_fill_brewer(palette = "Reds") +
+  labs(title = "30-day mortality rate by Killip class",
+       x = "Killip class", y = "Mortality rate") +
+  theme_bw(base_size = 12) +
+  theme(legend.position = "none", plot.title = element_text(face = "bold")) + theme_minimal()
+```
+
+### ST elevation
+
+```{r ste}
+
+ggplot(ami_data, aes(x = ste)) +
+  geom_freqpoly(binwidth = 1, color = "steelblue") +
+  labs(title = "ST elevation on ECG (number of leads)") + theme_minimal()
+
+ami_data %>%
+  group_by(ste, day30) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(ste) %>%
+  mutate(pct = n / sum(n)) %>%
+  filter(day30 == "Dead") %>%
+  ggplot(aes(x = ste, y = pct)) +
+  geom_col(fill = "#B71C1C") +
+  scale_y_continuous(labels = scales::percent) +
+  labs(title = "Mortality by ST elevation in ECG presence",
+       x = "ST elevation", y = "Mortality rate") +
+  theme_bw(base_size = 11) + theme_minimal()
+```
+
+### Sex
+```{r sex}
+# Bar chart: sex + outcome
+ggplot(ami_data, aes(x = factor(sex), fill = day30)) +
+  scale_fill_manual(name = "Status", values = status_colors) +
+  geom_bar(position = "fill") +
+  scale_y_continuous(labels = scales::percent) +
+  labs(title = "Sex distribution and status after 30 days", x = "Sesso (0=M, 1=F)") + theme_minimal()
+```
 
 ### BMI
 
 ```{r bmi}
-ami_data$BMI <- ami_data$wei/ami_data$hei
+ggplot(ami_data, aes(x = bmi, fill = day30, colour = day30)) +
+  geom_density(alpha = 0.4, linewidth = 0.8) +
+  scale_fill_manual(values  = status_colors) +
+  scale_colour_manual(values = status_colors) +
+  labs(title = "BMI distribution", x = "BMI (kg/m²)", y = "Density",
+       fill = "30-day status", colour = "30-day status") +
+  theme_bw(base_size = 12) +
+  theme(legend.position = "bottom", plot.title = element_text(face = "bold"))
+
+# Violinplot: BMI + outcome
+ggplot(ami_data, aes(x = day30, y = bmi, fill = day30)) +
+  geom_violin(alpha = 0.5, trim = TRUE) +
+  geom_boxplot(width = 0.15, outlier.size = 0.5, alpha = 0.7) +
+  scale_fill_manual(values = status_colors) +
+  labs(title = "BMI by 30-day status", x = NULL, y = "BMI") +
+  theme_bw(base_size = 11) +
+  theme(legend.position = "none") + theme_minimal()
+```
+
+
+# Question 2
+
+> Perform univariable regression analyses (crude association measures) of all candidate
+predictors for your prognostic model. 
+> For the continuous variables is the linear effect reasonable?
+
+## Crude odds
+```{r crude-or}
+tbl_uvregression(
+  ami_data,
+  label = pretty_labels,
+  method   = glm,
+  y        = day30,
+  method.args = list(family = binomial),
+  exponentiate = TRUE,
+  include  = c(age, killip, sho, ant, hrt, ste, st4, smk, hyp, pmi, sex, bmi, pan, ttr, dia, fam, htn, lip)
+) %>% bold_labels()
+```
+
+## Linearity check for continuous predictors
+
+
+```{r lin}
+# Lspline / restricted cubic splines approach via rms
+dd <- datadist(ami_data); options(datadist = "dd")
+
+check_linearity <- function(var, label) {
+  f_lin  <- glm(day30 ~ get(var),                          data = ami_data, family = binomial)
+  f_spl  <- glm(day30 ~ rcs(get(var), 4),                  data = ami_data, family = binomial)
+  p_val  <- anova(f_lin, f_spl, test = "LRT")$`Pr(>Chi)`[2]
+  cat(sprintf("%-6s — LRT linearity p = %.3f  %s\n",
+              label, p_val,
+              ifelse(p_val < 0.05, "⚠ non-linear", "linear OK")))
+}
+
+check_linearity("age", "Age")
+check_linearity("ste", "ST elevation")
+check_linearity("bmi", "BMI")
+check_linearity("hei", "Height")
+check_linearity("wei", "Weight")
+```
+
+### Visual check
+
+```{r vis}
+library(mgcv)
+
+plot_linearity <- function(var, xlab) {
+  fit <- gam(as.numeric(day30) - 1 ~ s(get(var)), data = ami_data, family = binomial)
+  plot(fit, se = TRUE, rug = TRUE,
+       xlab = xlab, ylab = "Log-odds (30-day death)",
+       main = paste("GAM smooth —", xlab))
+  abline(h = 0, lty = 2)
+}
+
+par(mfrow = c(1, 3))
+plot_linearity("age", "Age (years)")
+plot_linearity("ste", "ST elevation (leads)")
+plot_linearity("bmi", "BMI (kg/m²)")
+plot_linearity("hei", "Height (m)")
+plot_linearity("wei", "Weight (kg)")
+par(mfrow = c(1, 1))
 ```
