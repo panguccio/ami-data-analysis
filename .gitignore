@@ -4,3 +4,6 @@
 .Ruserdata
 .library
 .positai
+.DS_Store
+.RDataTmp
+.RDataTmp1
